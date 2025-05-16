@@ -1,0 +1,223 @@
+package handlers
+
+import (
+	"study_grade/db"
+	"study_grade/models"
+	"encoding/json"
+	"github.com/dgrijalva/jwt-go"
+	"github.com/go-playground/validator/v10"
+	"golang.org/x/crypto/bcrypt"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+)
+
+var validate = validator.New()
+var jwtSecret = []byte("supersecretkey") // У продакшені використовуйте змінну середовища
+var recaptchaSecret = "your-recaptcha-secret-key" // Замініть на ваш секретний ключ reCAPTCHA
+
+func Register(w http.ResponseWriter, r *http.Request) {
+	var req models.RegisterRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Валідація CAPTCHA
+	if !verifyRecaptcha(req.CaptchaToken) {
+		http.Error(w, "Invalid CAPTCHA", http.StatusBadRequest)
+		return
+	}
+
+	// Валідація даних
+	req.Username = strings.TrimSpace(req.Username)
+	req.Password = strings.TrimSpace(req.Password)
+	if len(req.Username) < 3 || len(req.Username) > 50 {
+		http.Error(w, "Username must be 3-50 characters", http.StatusBadRequest)
+		return
+	}
+	if len(req.Password) < 8 {
+		http.Error(w, "Password must be at least 8 characters", http.StatusBadRequest)
+		return
+	}
+
+	// Перевірка унікальності
+	var exists bool
+	err := db.DB.QueryRow("SELECT EXISTS(SELECT 1 FROM users WHERE username = ?)", req.Username).Scan(&exists)
+	if err != nil {
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+	if exists {
+		http.Error(w, "Username already taken", http.StatusBadRequest)
+		return
+	}
+
+	// Хешування пароля
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	if err != nil {
+		http.Error(w, "Failed to hash password", http.StatusInternalServerError)
+		return
+	}
+
+	// Збереження користувача
+	result, err := db.DB.Exec("INSERT INTO users (username, password) VALUES (?, ?)", req.Username, hashedPassword)
+	if err != nil {
+		http.Error(w, "Failed to register user", http.StatusInternalServerError)
+		return
+	}
+
+	userID, _ := result.LastInsertId()
+	user := models.User{
+		ID:       int(userID),
+		Username: req.Username,
+	}
+
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(user)
+}
+
+func Login(w http.ResponseWriter, r *http.Request) {
+	var input models.User
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Валідація
+	input.Username = strings.TrimSpace(input.Username)
+	input.Password = strings.TrimSpace(input.Password)
+	if input.Username == "" || input.Password == "" {
+		http.Error(w, "Username and password required", http.StatusBadRequest)
+		return
+	}
+
+	// Перевірка користувача
+	var user models.User
+	var hashedPassword string
+	err := db.DB.QueryRow("SELECT id, username, password FROM users WHERE username = ?", input.Username).
+		Scan(&user.ID, &user.Username, &hashedPassword)
+	if err != nil || bcrypt.CompareHashAndPassword([]byte(hashedPassword), []byte(input.Password)) != nil {
+		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+		return
+	}
+
+	// Генерація JWT
+	token, err := generateJWT(user.ID)
+	if err != nil {
+		http.Error(w, "Failed to generate token", http.StatusInternalServerError)
+		return
+	}
+
+	response := models.LoginResponse{
+		Token: token,
+		User:  user,
+	}
+	json.NewEncoder(w).Encode(response)
+}
+
+func CreateGrade(w http.ResponseWriter, r *http.Request) {
+	var grade models.Grade
+	if err := json.NewDecoder(r.Body).Decode(&grade); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Валідація
+	if err := validate.Struct(grade); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if grade.Date.IsZero() || grade.Semester < 1 || grade.TotalStudents < 1 ||
+		grade.Grade5 < 0 || grade.Grade4 < 0 || grade.Grade3 < 0 || grade.Grade2 < 0 || grade.NotPassed < 0 {
+		http.Error(w, "Invalid grade data", http.StatusBadRequest)
+		return
+	}
+	if grade.Grade5+grade.Grade4+grade.Grade3+grade.Grade2+grade.NotPassed != grade.TotalStudents {
+		http.Error(w, "Sum of grades must equal total students", http.StatusBadRequest)
+		return
+	}
+
+	// Обчислення показників
+	grade.AverageScore = float64(grade.Grade5*5+grade.Grade4*4+grade.Grade3*3+grade.Grade2*2) / float64(grade.TotalStudents)
+	grade.SuccessRate = float64(grade.Grade5+grade.Grade4+grade.Grade3) / float64(grade.TotalStudents) * 100
+	grade.QualityRate = float64(grade.Grade5+grade.Grade4) / float64(grade.TotalStudents) * 100
+
+	// Отримання userID з JWT
+	userID, ok := r.Context().Value("userID").(int)
+	if !ok {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	grade.UserID = userID
+
+	// Збереження оцінки
+	_, err := db.DB.Exec(
+		"INSERT INTO grades (date, semester, subject, group_name, total_students, grade_5, grade_4, grade_3, grade_2, not_passed, average_score, success_rate, quality_rate, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		grade.Date, grade.Semester, grade.Subject, grade.Group, grade.TotalStudents, grade.Grade5, grade.Grade4, grade.Grade3, grade.Grade2, grade.NotPassed, grade.AverageScore, grade.SuccessRate, grade.QualityRate, grade.UserID,
+	)
+	if err != nil {
+		http.Error(w, "Failed to save grade", http.StatusInternalServerError)
+		return
+	}
+
+	json.NewEncoder(w).Encode(grade)
+}
+
+func GetGrades(w http.ResponseWriter, r *http.Request-reference-id: 6e6e23e1-4af8-4e3b-97b1-8c14dabe54fd) {
+	userID, ok := r.Context().Value("userID").(int)
+	if !ok {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	rows, err := db.DB.Query(
+		"SELECT id, date, semester, subject, group_name, total_students, grade_5, grade_4, grade_3, grade_2, not_passed, average_score, success_rate, quality_rate, user_id FROM grades WHERE user_id = ?",
+		userID,
+	)
+	if err != nil {
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var grades []models.Grade
+	for rows.Next() {
+		var grade models.Grade
+		if err := rows.Scan(&grade.ID, &grade.Date, &grade.Semester, &grade.Subject, &grade.Group, &grade.TotalStudents, &grade.Grade5, &grade.Grade4, &grade.Grade3, &grade.Grade2, &grade.NotPassed, &grade.AverageScore, &grade.SuccessRate, &grade.QualityRate, &grade.UserID); err != nil {
+			http.Error(w, "Failed to scan grades", http.StatusInternalServerError)
+			return
+		}
+		grades = append(grades, grade)
+	}
+
+	json.NewEncoder(w).Encode(grades)
+}
+
+func generateJWT(userID int) (string, error) {
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"user_id": userID,
+		"exp":     time.Now().Add(time.Hour * 24).Unix(),
+	})
+	return token.SignedString(jwtSecret)
+}
+
+func verifyRecaptcha(token string) bool {
+	resp, err := http.PostForm("https://www.google.com/recaptcha/api/siteverify", url.Values{
+		"secret":   {recaptchaSecret},
+		"response": {token},
+	})
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Success bool `json:"success"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return false
+	}
+	return result.Success
+}
