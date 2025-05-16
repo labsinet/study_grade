@@ -16,6 +16,7 @@ func main() {
 
 	// Налаштування CORS
 	r.Use(middleware.CORSMiddleware)
+	log.Println("CORSMiddleware підключено")
 
 	// Публічні маршрути
 	r.HandleFunc("/api/register", handlers.Register).Methods("POST")
