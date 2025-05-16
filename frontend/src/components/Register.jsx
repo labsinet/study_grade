@@ -6,12 +6,13 @@ function Register({ setUser, setToken, setShowRegister }) {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
 
-  console.log('Register rendering', { username, password, error });
+  console.log('Register rendering', { username, password, error, API_BASE_URL });
 
   const handleRegister = async (e) => {
     e.preventDefault();
     setError('');
-    console.log('Submitting register with POST to', `${API_BASE_URL}/api/register`);
+    const url = `${API_BASE_URL}/api/register`;
+    console.log('Submitting register with POST to', url, 'body:', { username, password });
     if (!username || !password) {
       setError('Заповніть усі поля');
       return;
@@ -26,12 +27,12 @@ function Register({ setUser, setToken, setShowRegister }) {
     }
 
     try {
-      const response = await fetch(`${API_BASE_URL}/api/register`, {
+      const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password }),
       });
-      console.log('Register response status:', response.status);
+      console.log('Register response status:', response.status, 'for URL:', url);
 
       if (response.ok) {
         const user = await response.json();
@@ -52,7 +53,7 @@ function Register({ setUser, setToken, setShowRegister }) {
         setError(errorText || 'Помилка реєстрації');
       }
     } catch (err) {
-      console.error('Register fetch error:', err);
+      console.error('Register fetch error:', err, 'for URL:', url);
       setError('Не вдалося підключитися до сервера');
     }
   };

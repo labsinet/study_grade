@@ -7,7 +7,7 @@ import (
 type User struct {
 	ID       int    `json:"id"`
 	Username string `json:"username"`
-	Password string `json:"-"` // Не повертаємо пароль
+	Password string `json:"password,omitempty"` // Не повертаємо пароль
 }
 
 type RegisterRequest struct {
