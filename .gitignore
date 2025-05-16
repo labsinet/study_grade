@@ -134,3 +134,46 @@ dist
 .yarn/build-state.yml
 .yarn/install-state.gz
 .pnp.*
+# Бінарні файли
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Каталог з компільованими пакетами
+/pkg/
+/bin/
+
+# Кеші та тимчасові файли
+*.log
+*.tmp
+
+# IDE та редактори
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# MacOS
+.DS_Store
+
+# Linux
+*~
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Модулі Go (тільки якщо не використовуєш вендоринг)
+vendor/
+
+# Кеш Go
+/go.sum
+
+# Кеш збірки Go (тільки якщо він створюється у вашій директорії)
+.cache/
+
